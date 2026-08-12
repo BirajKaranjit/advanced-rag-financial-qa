@@ -15,10 +15,12 @@ ARCHITECTURE.md, "Bounding-box lineage metadata").
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 import fitz  # PyMuPDF
 import pdfplumber
@@ -129,7 +131,7 @@ class PdfParser:
 
     # -- text extraction ----------------------------------------------------
 
-    def _extract_page_lines(self, page: "pdfplumber.page.Page") -> list[tuple[str, list[float] | None]]:
+    def _extract_page_lines(self, page: Any) -> list[tuple[str, list[float] | None]]:
         """Extracts (line_text, bbox) pairs for a page using pdfplumber's
         line-grouping extractor, which aggregates word-level bounding
         boxes into a per-line box. Falls back to plain `.extract_text()`
@@ -153,7 +155,7 @@ class PdfParser:
             text = page.extract_text() or ""
             return [(ln, None) for ln in text.splitlines() if ln.strip()]
 
-    def _ocr_fallback(self, page: "pdfplumber.page.Page") -> str:
+    def _ocr_fallback(self, page: Any) -> str:
         """Route a text-less page through Tesseract OCR."""
         logger.info("Page %s yielded no text; falling back to OCR", page.page_number)
         try:
@@ -213,7 +215,7 @@ class PdfParser:
 
     # -- table extraction -----------------------------------------------------
 
-    def _extract_tables(self, page: "pdfplumber.page.Page", page_number: int) -> list[dict]:
+    def _extract_tables(self, page: Any, page_number: int) -> list[dict]:
         tables = []
         for table_obj in page.find_tables():
             grid = table_obj.extract()
@@ -271,7 +273,7 @@ class PdfParser:
                 flat_index += 1
 
         title = self._infer_table_title(grid, section_path)
-        table_id = f"tbl_{page_number}_{abs(hash((title, page_number))) % 100000}"
+        table_id = self._build_table_id(title, section_path, page_number, grid)
 
         footnotes = self._extract_footnotes(grid, cells)
         markdown = self._to_markdown(grid, header_row_count)
@@ -298,6 +300,30 @@ class PdfParser:
             markdown=markdown,
             checksum_passed=checksum_passed,
         )
+
+    @staticmethod
+    def _build_table_id(
+        title: str, section_path: str, page_number: int, grid: list[list]
+    ) -> str:
+        """Build a stable, collision-resistant table identifier.
+
+        The old `hash()`-based approach was process-randomized and only used a
+        small modulus, which could cause distinct tables to collapse onto the
+        same `table_id` and then duplicate all derived row chunk IDs.
+        """
+        hasher = hashlib.sha1()
+        separator = memoryview(b"\0")
+        hasher.update(memoryview(str(page_number).encode("utf-8")))
+        hasher.update(separator)
+        hasher.update(memoryview(section_path.encode("utf-8")))
+        hasher.update(separator)
+        hasher.update(memoryview(title.encode("utf-8")))
+        hasher.update(separator)
+        for row in grid:
+            row_text = "\x1f".join("" if cell is None else str(cell).strip() for cell in row)
+            hasher.update(memoryview(row_text.encode("utf-8")))
+            hasher.update(separator)
+        return f"tbl_{page_number}_{hasher.hexdigest()[:12]}"
 
     def _detect_header_row_count(self, grid: list[list]) -> int:
         """Multi-level headers are common in financial tables (e.g. a

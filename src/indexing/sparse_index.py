@@ -6,11 +6,10 @@ matches (e.g. a specific dollar figure) reliable in a way dense search
 alone is not.
 """
 
-from __future__ import annotations
-
 import logging
 import pickle
 import re
+from typing import Any, cast
 
 import bm25s
 
@@ -40,8 +39,9 @@ class SparseIndex:
             logger.warning("SparseIndex.build called with no chunks")
             return
         try:
-            corpus_tokens = [_tokenize(c.text) for c in chunks]
-            self._chunk_ids = [c.chunk_id for c in chunks]
+            unique_chunks = self._dedupe_chunks(chunks)
+            corpus_tokens = [_tokenize(c.text) for c in unique_chunks]
+            self._chunk_ids = [c.chunk_id for c in unique_chunks]
             self._retriever = bm25s.BM25()
             self._retriever.index(corpus_tokens)
             self._persist()
@@ -75,7 +75,10 @@ class SparseIndex:
     def _persist(self) -> None:
         settings.bm25_index_path.parent.mkdir(parents=True, exist_ok=True)
         with open(settings.bm25_index_path, "wb") as f:
-            pickle.dump({"retriever": self._retriever, "chunk_ids": self._chunk_ids}, f)
+            pickle.dump(
+                {"retriever": self._retriever, "chunk_ids": self._chunk_ids},
+                cast(Any, f),
+            )
 
     def _load(self) -> None:
         if not settings.bm25_index_path.exists():
@@ -84,3 +87,20 @@ class SparseIndex:
             payload = pickle.load(f)
         self._retriever = payload["retriever"]
         self._chunk_ids = payload["chunk_ids"]
+
+    @staticmethod
+    def _dedupe_chunks(chunks: list[Chunk]) -> list[Chunk]:
+        deduped: dict[str, Chunk] = {}
+        duplicate_ids: list[str] = []
+        for chunk in chunks:
+            if chunk.chunk_id in deduped:
+                duplicate_ids.append(chunk.chunk_id)
+            deduped[chunk.chunk_id] = chunk
+        if duplicate_ids:
+            logger.warning(
+                "Dropping %s duplicate chunk IDs before sparse indexing: %s",
+                len(duplicate_ids),
+                ", ".join(sorted(set(duplicate_ids))),
+            )
+        return list(deduped.values())
+

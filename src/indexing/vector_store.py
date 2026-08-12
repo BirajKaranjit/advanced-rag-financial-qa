@@ -38,13 +38,14 @@ class VectorStore:
         if not chunks:
             return
         try:
-            texts = [c.text for c in chunks]
+            unique_chunks = self._dedupe_chunks(chunks)
+            texts = [c.text for c in unique_chunks]
             embeddings = self.embedding_model.embed_documents(texts)
             self._collection.upsert(
-                ids=[c.chunk_id for c in chunks],
+                ids=[c.chunk_id for c in unique_chunks],
                 embeddings=embeddings.tolist(),
                 documents=texts,
-                metadatas=[self._to_metadata(c) for c in chunks],
+                metadatas=[self._to_metadata(c) for c in unique_chunks],
             )
         except Exception as exc:  # noqa: BLE001
             raise VectorStoreError(f"Failed to add {len(chunks)} chunks: {exc}") from exc
@@ -90,3 +91,26 @@ class VectorStore:
             "parent_id": chunk.parent_id or "",
             "injection_risk_score": chunk.injection_risk_score,
         }
+
+    @staticmethod
+    def _dedupe_chunks(chunks: list[Chunk]) -> list[Chunk]:
+        """Preserve the last occurrence of each chunk_id within a batch.
+
+        Chroma rejects duplicate IDs inside a single upsert request. If a
+        parser or chunker bug introduces duplicates, we keep the last copy so
+        the batch remains writable and the most recent payload wins.
+        """
+        deduped: dict[str, Chunk] = {}
+        duplicate_ids: list[str] = []
+        for chunk in chunks:
+            if chunk.chunk_id in deduped:
+                duplicate_ids.append(chunk.chunk_id)
+            deduped[chunk.chunk_id] = chunk
+        if duplicate_ids:
+            logger.warning(
+                "Dropping %s duplicate chunk IDs before vector upsert: %s",
+                len(duplicate_ids),
+                ", ".join(sorted(set(duplicate_ids))),
+            )
+        return list(deduped.values())
+
