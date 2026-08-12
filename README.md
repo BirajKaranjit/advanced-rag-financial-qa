@@ -130,3 +130,7 @@ advanced-rag-financial-qa/
   raises an error with provider-specific guidance to update the matching env var.
 - Ingested content is treated as untrusted input throughout generation. See
   ARCHITECTURE.md, "Prompt injection and RAG document-injection defenses."
+
+
+##Output Samples
+![img.png](img.png)

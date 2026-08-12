@@ -117,6 +117,25 @@ def _normalize_gemini_function_args(args: Any) -> dict[str, Any]:
     return {}
 
 
+def _safe_get_gemini_text(response: Any) -> str:
+    """Safely extract text from a Gemini response without throwing when function calls or non-text parts are present."""
+    try:
+        return response.text or ""
+    except (ValueError, AttributeError):
+        pass
+
+    text_parts = []
+    candidates = getattr(response, "candidates", []) or []
+    for candidate in candidates:
+        content = getattr(candidate, "content", None)
+        parts = getattr(content, "parts", []) or []
+        for part in parts:
+            text = getattr(part, "text", None)
+            if text:
+                text_parts.append(text)
+    return "".join(text_parts)
+
+
 class LlmClient:
     """Thin provider-agnostic wrapper. `complete` is used for plain text
     generation (rewrites, HyDE, final answers without tools);
@@ -190,7 +209,7 @@ class LlmClient:
                     temperature=settings.generation_temperature,
                 ),
             )
-            return response.text or ""
+            return _safe_get_gemini_text(response)
         except Exception as exc:  # noqa: BLE001
             guidance = _model_access_guidance("gemini", settings.gemini_model)
             raise GenerationError(f"Gemini generation failed: {exc}. {guidance}") from exc
@@ -304,14 +323,15 @@ class LlmClient:
             )
 
             function_call = None
-            for part in getattr(response.candidates[0].content, "parts", []):
-                candidate_call = getattr(part, "function_call", None)
-                if candidate_call is not None:
-                    function_call = candidate_call
-                    break
+            if response.candidates and response.candidates[0].content:
+                for part in getattr(response.candidates[0].content, "parts", []):
+                    candidate_call = getattr(part, "function_call", None)
+                    if candidate_call is not None and getattr(candidate_call, "name", ""):
+                        function_call = candidate_call
+                        break
 
             if function_call is None:
-                return response.text or "", False, None
+                return _safe_get_gemini_text(response), False, None
 
             tool_name = getattr(function_call, "name", "")
             tool_args = _normalize_gemini_function_args(getattr(function_call, "args", None))
@@ -328,7 +348,7 @@ class LlmClient:
                     ]
                 )
             )
-            return follow_up.text or "", True, str(tool_result)
+            return _safe_get_gemini_text(follow_up), True, str(tool_result)
         except Exception as exc:  # noqa: BLE001
             guidance = _model_access_guidance("gemini", settings.gemini_model)
             raise GenerationError(
