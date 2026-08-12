@@ -18,3 +18,4 @@ data/processed/*
 *.db
 *.pkl
 .DS_Store
+.idea/
