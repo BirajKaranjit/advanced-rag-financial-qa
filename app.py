@@ -70,7 +70,13 @@ def _render_trace(trace) -> None:
             )
 
         st.markdown("**Compressed context passed to generation:**")
-        st.text_area("context", trace.compressed_context, height=200, label_visibility="collapsed")
+        st.text_area(
+            "context",
+            trace.compressed_context,
+            height=200,
+            label_visibility="collapsed",
+            key=f"context_{id(trace)}",
+        )
 
         if trace.spans:
             st.markdown("**Stage timings:**")

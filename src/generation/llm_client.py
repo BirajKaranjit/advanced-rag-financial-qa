@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import httpx
 from typing import Any
 
 from groq import Groq
@@ -28,6 +29,13 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     genai = None  # type: ignore[assignment]
 
+_orig_httpx_init = httpx.Client.__init__
+
+def _patched_httpx_init(self, *args, **kwargs):
+    kwargs.pop("proxies", None)
+    _orig_httpx_init(self, *args, **kwargs)
+
+httpx.Client.__init__ = _patched_httpx_init
 
 def _model_access_guidance(provider: str, model: str) -> str:
     if provider == "gemini":
