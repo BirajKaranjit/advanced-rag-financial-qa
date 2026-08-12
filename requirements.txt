@@ -5,7 +5,7 @@ pytesseract==0.3.13
 Pillow==10.4.0
 
 # Indexing
-# chromadb==0.5.5
+chromadb==1.5.9
 sentence-transformers==3.0.1
 bm25s==0.2.0
 
