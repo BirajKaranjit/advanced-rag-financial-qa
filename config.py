@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -34,8 +35,8 @@ class Settings(BaseSettings):
     header_footer_repetition_threshold: float = 0.60  # >60% of pages -> noise
 
     # --- Embedding / retrieval ---------------------------------------------
-    embedding_model_name: str = "BAAI/bge-small-en-v1.5"
-    reranker_model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    embedding_model_name: str = Field(default="BAAI/bge-small-en-v1.5", alias="EMBEDDING_MODEL_NAME")
+    reranker_model_name: str = Field(default="cross-encoder/ms-marco-MiniLM-L-6-v2", alias="RERANKER_MODEL_NAME")
     dense_top_k: int = 20
     sparse_top_k: int = 20
     rrf_k: int = 60
@@ -44,13 +45,17 @@ class Settings(BaseSettings):
 
     hf_hub_token: str = Field(default="", alias="HUGGINGFACE_HUB_TOKEN")
 
-    generation_provider: str = "groq"  # "groq" | "gemini" | "hf"
+    generation_provider: Literal["groq", "gemini", "hf"] = Field(
+        default="groq", alias="GENERATION_PROVIDER"
+    )
     groq_api_key: str = Field(default="", alias="GROQ_API_KEY")
-    groq_model: str = "llama3-70b-8192"
+    groq_model: str = Field(default="llama3-70b-8192", alias="GROQ_MODEL")
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
-    gemini_model: str = "gemini-1.5-flash"
+    gemini_model: str = Field(default="gemini-3.6-flash", alias="GEMINI_MODEL")
     hf_inference_token: str = Field(default="", alias="HF_INFERENCE_TOKEN")
-    hf_fallback_model: str = "meta-llama/Meta-Llama-3-8B-Instruct"
+    hf_fallback_model: str = Field(
+        default="meta-llama/Meta-Llama-3-8B-Instruct", alias="HF_FALLBACK_MODEL"
+    )
     generation_temperature: float = 0.1
     generation_max_tokens: int = 1024
 
@@ -65,6 +70,12 @@ class Settings(BaseSettings):
 
     # --- Observability -----------------------------------------------------------
     enable_tracing: bool = True
+
+    @field_validator("generation_provider", mode="before")
+    @classmethod
+    def _normalize_generation_provider(cls, value: str) -> str:
+        # Accept uppercase env values (e.g. GENERATION_PROVIDER=GEMINI).
+        return value.lower() if isinstance(value, str) else value
 
     def ensure_directories(self) -> None:
         """Create data directories if they do not already exist."""

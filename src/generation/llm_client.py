@@ -29,23 +29,92 @@ except ImportError:  # pragma: no cover - optional dependency
     genai = None  # type: ignore[assignment]
 
 
-def _openai_tool_to_gemini_declaration(tool_schema: dict) -> dict:
-    """Converts one OpenAI-style tool schema (as used for Groq) into the
-    function-declaration shape google-generativeai expects.
+def _model_access_guidance(provider: str, model: str) -> str:
+    if provider == "gemini":
+        return (
+            f"Configured Gemini model '{model}' may be unavailable for this API key. "
+            "Set GEMINI_MODEL in .env to a model listed in your Google AI Studio account "
+            "for that key."
+        )
+    if provider == "groq":
+        return (
+            f"Configured Groq model '{model}' may be unavailable for this API key. "
+            "Set GROQ_MODEL in .env to a model listed in your Groq account for that key."
+        )
+    if provider == "hf":
+        return (
+            f"Configured HF fallback model '{model}' may be unavailable or gated. "
+            "Set HF_FALLBACK_MODEL in .env to a model your token can access."
+        )
+    return ""
 
-    Note: the google-generativeai SDK's accepted `tools=` shape has moved
-    across releases (raw dict vs. genai.types.Tool vs. protos.Tool). This
-    passes a plain dict, the form documented as accepted directly by
-    `GenerativeModel(tools=...)` at the time of writing; if a future SDK
-    version rejects it, wrap the return value in
-    `genai.types.Tool(function_declarations=[...])` instead.
-    """
-    fn = tool_schema["function"]
-    return {
-        "name": fn["name"],
-        "description": fn["description"],
-        "parameters": fn["parameters"],
+
+def _gemini_schema_type(type_name: str) -> Any:
+    """Map OpenAI JSON schema types to Gemini proto enum values."""
+    if genai is None:
+        return None
+    type_map = {
+        "string": genai.protos.Type.STRING,
+        "number": genai.protos.Type.NUMBER,
+        "integer": genai.protos.Type.INTEGER,
+        "boolean": genai.protos.Type.BOOLEAN,
+        "array": genai.protos.Type.ARRAY,
+        "object": genai.protos.Type.OBJECT,
     }
+    return type_map.get(type_name, genai.protos.Type.TYPE_UNSPECIFIED)
+
+
+def _json_schema_to_gemini_schema(schema: Any) -> Any:
+    """Recursively convert OpenAI JSON schema into a Gemini Schema proto."""
+    if genai is None:
+        return schema
+    if isinstance(schema, genai.protos.Schema):
+        return schema
+    if not isinstance(schema, dict):
+        schema = {"type": "object"}
+
+    schema_type = _gemini_schema_type(str(schema.get("type", "object")).lower())
+    converted: dict[str, Any] = {"type": schema_type}
+    if "description" in schema:
+        converted["description"] = schema["description"]
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        converted["properties"] = {
+            key: _json_schema_to_gemini_schema(value) for key, value in properties.items()
+        }
+    items = schema.get("items")
+    if isinstance(items, dict):
+        converted["items"] = _json_schema_to_gemini_schema(items)
+    if "enum" in schema:
+        converted["enum"] = list(schema["enum"])
+    if "required" in schema:
+        converted["required"] = list(schema["required"])
+    return genai.protos.Schema(**converted)
+
+
+def _openai_tool_to_gemini_declaration(tool_schema: dict) -> Any:
+    """Convert an OpenAI-style tool schema into Gemini FunctionDeclaration."""
+    fn = tool_schema["function"]
+    parameters = fn.get("parameters") or {"type": "object", "properties": {}}
+    return genai.protos.FunctionDeclaration(
+        name=fn["name"],
+        description=fn.get("description", ""),
+        parameters=_json_schema_to_gemini_schema(parameters),
+    )
+
+
+def _normalize_gemini_function_args(args: Any) -> dict[str, Any]:
+    """Coerce Gemini MapComposite inputs to a plain dict for tool execution."""
+    if args is None:
+        return {}
+    if isinstance(args, dict):
+        return args
+    if hasattr(args, "items"):
+        try:
+            return dict(args.items())
+        except Exception:  # pragma: no cover - defensive fallback
+            pass
+    return {}
 
 
 class LlmClient:
@@ -94,37 +163,49 @@ class LlmClient:
     def _complete_groq(self, system_prompt: str, user_prompt: str, max_tokens: int | None) -> str:
         if self._groq is None:
             raise GenerationError("Groq client not configured; set GROQ_API_KEY")
-        response = self._groq.chat.completions.create(
-            model=settings.groq_model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            max_tokens=max_tokens or settings.generation_max_tokens,
-            temperature=settings.generation_temperature,
-        )
-        return response.choices[0].message.content or ""
+        try:
+            response = self._groq.chat.completions.create(
+                model=settings.groq_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                max_tokens=max_tokens or settings.generation_max_tokens,
+                temperature=settings.generation_temperature,
+            )
+            return response.choices[0].message.content or ""
+        except Exception as exc:  # noqa: BLE001
+            guidance = _model_access_guidance("groq", settings.groq_model)
+            raise GenerationError(f"Groq generation failed: {exc}. {guidance}") from exc
 
     def _complete_gemini(self, system_prompt: str, user_prompt: str, max_tokens: int | None) -> str:
         if not self._gemini_configured:
             raise GenerationError("Gemini client not configured; set GEMINI_API_KEY")
-        model = genai.GenerativeModel(settings.gemini_model, system_instruction=system_prompt)
-        response = model.generate_content(
-            user_prompt,
-            generation_config=genai.types.GenerationConfig(
-                max_output_tokens=max_tokens or settings.generation_max_tokens,
-                temperature=settings.generation_temperature,
-            ),
-        )
-        return response.text or ""
+        try:
+            model = genai.GenerativeModel(settings.gemini_model, system_instruction=system_prompt)
+            response = model.generate_content(
+                user_prompt,
+                generation_config=genai.types.GenerationConfig(
+                    max_output_tokens=max_tokens or settings.generation_max_tokens,
+                    temperature=settings.generation_temperature,
+                ),
+            )
+            return response.text or ""
+        except Exception as exc:  # noqa: BLE001
+            guidance = _model_access_guidance("gemini", settings.gemini_model)
+            raise GenerationError(f"Gemini generation failed: {exc}. {guidance}") from exc
 
     def _complete_hf(self, system_prompt: str, user_prompt: str, max_tokens: int | None) -> str:
         if self._hf is None:
             raise GenerationError("HF Inference client not configured; set HF_INFERENCE_TOKEN")
-        prompt = f"<system>{system_prompt}</system>\n<user>{user_prompt}</user>"
-        return self._hf.text_generation(
-            prompt, model=settings.hf_fallback_model, max_new_tokens=max_tokens or 512
-        )
+        try:
+            prompt = f"<system>{system_prompt}</system>\n<user>{user_prompt}</user>"
+            return self._hf.text_generation(
+                prompt, model=settings.hf_fallback_model, max_new_tokens=max_tokens or 512
+            )
+        except Exception as exc:  # noqa: BLE001
+            guidance = _model_access_guidance("hf", settings.hf_fallback_model)
+            raise GenerationError(f"HF generation failed: {exc}. {guidance}") from exc
 
     # -- tool-calling completion --------------------------------------------------
 
@@ -136,19 +217,19 @@ class LlmClient:
         tool_executor,
         max_tokens: int | None = None,
     ) -> tuple[str, bool, str | None]:
-        """Runs a single-round tool-calling loop against the configured
-        provider (Groq or Gemini).
-
-        Returns:
-            (final_answer_text, tool_was_called, tool_result_text)
-        """
+        """Runs a single-round tool-calling loop against the configured provider."""
         if self.provider == "gemini":
             return self._complete_with_tools_gemini(
                 system_prompt, user_prompt, tools, tool_executor, max_tokens
             )
-        return self._complete_with_tools_groq(
-            system_prompt, user_prompt, tools, tool_executor, max_tokens
+        if self.provider == "groq":
+            return self._complete_with_tools_groq(
+                system_prompt, user_prompt, tools, tool_executor, max_tokens
+            )
+        logger.warning(
+            "HF provider selected: tool calling is disabled, falling back to plain completion."
         )
+        return self.complete(system_prompt, user_prompt, max_tokens=max_tokens), False, None
 
     def _complete_with_tools_groq(
         self, system_prompt, user_prompt, tools, tool_executor, max_tokens
@@ -195,7 +276,10 @@ class LlmClient:
             final_text = follow_up.choices[0].message.content or ""
             return final_text, True, str(tool_result)
         except Exception as exc:  # noqa: BLE001
-            raise GenerationError(f"Groq tool-calling generation failed: {exc}") from exc
+            guidance = _model_access_guidance("groq", settings.groq_model)
+            raise GenerationError(
+                f"Groq tool-calling generation failed: {exc}. {guidance}"
+            ) from exc
 
     def _complete_with_tools_gemini(
         self, system_prompt, user_prompt, tools, tool_executor, max_tokens
@@ -203,9 +287,12 @@ class LlmClient:
         if not self._gemini_configured:
             raise GenerationError("Gemini client not configured; set GEMINI_API_KEY")
         try:
-            gemini_tools = [_openai_tool_to_gemini_declaration(t) for t in tools]
+            gemini_declarations = [_openai_tool_to_gemini_declaration(t) for t in tools]
+            gemini_tools = [genai.protos.Tool(function_declarations=gemini_declarations)]
             model = genai.GenerativeModel(
-                settings.gemini_model, system_instruction=system_prompt, tools=gemini_tools
+                settings.gemini_model,
+                system_instruction=system_prompt,
+                tools=gemini_tools,
             )
             chat = model.start_chat()
             response = chat.send_message(
@@ -217,23 +304,25 @@ class LlmClient:
             )
 
             function_call = None
-            for part in response.candidates[0].content.parts:
-                if getattr(part, "function_call", None):
-                    function_call = part.function_call
+            for part in getattr(response.candidates[0].content, "parts", []):
+                candidate_call = getattr(part, "function_call", None)
+                if candidate_call is not None:
+                    function_call = candidate_call
                     break
 
             if function_call is None:
                 return response.text or "", False, None
 
-            args = dict(function_call.args)
-            tool_result = tool_executor(function_call.name, args)
+            tool_name = getattr(function_call, "name", "")
+            tool_args = _normalize_gemini_function_args(getattr(function_call, "args", None))
+            tool_result = tool_executor(tool_name, tool_args)
 
             follow_up = chat.send_message(
                 genai.protos.Content(
                     parts=[
                         genai.protos.Part(
                             function_response=genai.protos.FunctionResponse(
-                                name=function_call.name, response={"result": str(tool_result)}
+                                name=tool_name, response={"result": str(tool_result)}
                             )
                         )
                     ]
@@ -241,4 +330,7 @@ class LlmClient:
             )
             return follow_up.text or "", True, str(tool_result)
         except Exception as exc:  # noqa: BLE001
-            raise GenerationError(f"Gemini tool-calling generation failed: {exc}") from exc
+            guidance = _model_access_guidance("gemini", settings.gemini_model)
+            raise GenerationError(
+                f"Gemini tool-calling generation failed: {exc}. {guidance}"
+            ) from exc

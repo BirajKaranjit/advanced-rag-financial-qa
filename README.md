@@ -22,6 +22,9 @@ diagrams, threat model, and evaluation results.
    - `GROQ_API_KEY` (default provider, free tier: <https://console.groq.com>), or
    - `GEMINI_API_KEY` (free tier: <https://aistudio.google.com/apikey>) —
      set `GENERATION_PROVIDER=gemini` in `.env` if you use this instead.
+   - Set provider model names in `.env` as well (`GROQ_MODEL`,
+     `GEMINI_MODEL`, `HF_FALLBACK_MODEL`) so you can switch to models your key
+     is actually allowed to use without editing code.
 
 ```bash
 git clone <repo-url>
@@ -29,6 +32,8 @@ cd advanced-rag-financial-qa
 cp .env.example .env
 # edit .env: set HUGGINGFACE_HUB_TOKEN and either GROQ_API_KEY or
 # GEMINI_API_KEY (+ GENERATION_PROVIDER=gemini if using Gemini)
+# optionally set GROQ_MODEL / GEMINI_MODEL / HF_FALLBACK_MODEL to
+# match what your account key can access
 ```
 
 ## Run with Docker (recommended)
@@ -120,5 +125,8 @@ advanced-rag-financial-qa/
 - The generation provider is swappable via `GENERATION_PROVIDER` in `.env`
   (Groq or Gemini), with Hugging Face Inference as a last-resort plain-text
   fallback if the primary provider call fails.
+- Model names are also env-driven (`GROQ_MODEL`, `GEMINI_MODEL`,
+  `HF_FALLBACK_MODEL`); if a key cannot access a configured model, the app now
+  raises an error with provider-specific guidance to update the matching env var.
 - Ingested content is treated as untrusted input throughout generation. See
   ARCHITECTURE.md, "Prompt injection and RAG document-injection defenses."
