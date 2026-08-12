@@ -1,0 +1,14 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    volumes:
+      # Persist ingested indexes (SQLite, ChromaDB, BM25) and uploaded
+      # PDFs across container restarts without rebuilding the image.
+      - ./data:/app/data
+    restart: unless-stopped

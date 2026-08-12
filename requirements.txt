@@ -1,0 +1,29 @@
+# Ingestion
+pdfplumber==0.11.4
+PyMuPDF==1.24.10
+pytesseract==0.3.13
+Pillow==10.4.0
+
+# Indexing
+# chromadb==0.5.5
+sentence-transformers==3.0.1
+bm25s==0.2.0
+
+# Generation
+groq==0.11.0
+google-generativeai==0.8.3
+huggingface_hub==0.24.6
+
+# Pipeline / config / data
+pydantic==2.9.2
+pydantic-settings==2.5.2
+python-dotenv==1.0.1
+
+# UI
+streamlit==1.38.0
+
+# Dev / quality
+pytest==8.3.3
+black==24.8.0
+ruff==0.6.9
+mypy==1.11.2
